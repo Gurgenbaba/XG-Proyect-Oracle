@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+.idea
+
+data/
+tests/
+storage/logs/
+storage/backups/
+
+*.log
+.DS_Store
+Thumbs.db
