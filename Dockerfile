@@ -17,7 +17,13 @@ RUN set -ex; \
     a2enmod rewrite expires; \
     rm -rf /var/lib/apt/lists/*
 
+# --- Fix: ensure only ONE Apache MPM is enabled (mod_php prefers prefork) ---
+RUN set -ex; \
+    a2dismod mpm_event || true; \
+    a2dismod mpm_worker || true; \
+    a2enmod mpm_prefork
 # Opcache (ok)
+
 RUN { \
     echo 'opcache.memory_consumption=128'; \
     echo 'opcache.interned_strings_buffer=8'; \
