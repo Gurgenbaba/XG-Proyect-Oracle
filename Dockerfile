@@ -5,7 +5,7 @@
 # - Bind: Apache listens on Railway $PORT (default 80 locally)
 # - Enable: rewrite/headers/expires
 # - AllowOverride All for .htaccess
-# - Permissions: storage/ + config/ writable for installer
+# - Permissions: storage/ + config/ + database/ writable for installer
 # -----------------------------------------------------------------------------
 
 FROM php:7.4-apache
@@ -21,7 +21,6 @@ RUN set -eux; \
     docker-php-ext-configure gd --with-freetype --with-jpeg; \
     docker-php-ext-install -j"$(nproc)" \
       gd mysqli opcache zip \
-      mbstring \
     ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -29,16 +28,17 @@ RUN set -eux; \
 RUN set -eux; \
     a2enmod rewrite expires headers; \
     \
-    # disable all MPMs (ignore errors), then enable prefork
-    a2dismod mpm_event  || true; \
-    a2dismod mpm_worker || true; \
-    a2dismod mpm_prefork || true; \
+    # disable all MPMs (ignore errors)
+    a2dismod mpm_event  >/dev/null 2>&1 || true; \
+    a2dismod mpm_worker >/dev/null 2>&1 || true; \
+    a2dismod mpm_prefork >/dev/null 2>&1 || true; \
     \
     # remove enabled symlinks (sometimes persists in weird layers)
     rm -f /etc/apache2/mods-enabled/mpm_event.load  /etc/apache2/mods-enabled/mpm_event.conf  || true; \
     rm -f /etc/apache2/mods-enabled/mpm_worker.load /etc/apache2/mods-enabled/mpm_worker.conf || true; \
     rm -f /etc/apache2/mods-enabled/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.conf || true; \
     \
+    # enable ONLY prefork
     a2enmod mpm_prefork; \
     \
     # allow .htaccess
@@ -46,15 +46,16 @@ RUN set -eux; \
     \
     # suppress ServerName warning
     echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf; \
-    a2enconf servername
+    a2enconf servername; \
+    \
+    # sanity
+    ls -la /etc/apache2/mods-enabled/mpm_*.load || true
 
 # --- Force DocumentRoot to /public (XGProyect webroot) ---
 RUN set -eux; \
-    sed -ri 's#DocumentRoot /var/www/html#DocumentRoot /var/www/html/public#g' /etc/apache2/sites-available/000-default.conf; \
-    # also adjust the <Directory> block if present
-    if grep -q "<Directory /var/www/>" /etc/apache2/apache2.conf; then true; fi
+    sed -ri 's#DocumentRoot /var/www/html#DocumentRoot /var/www/html/public#g' /etc/apache2/sites-available/000-default.conf
 
-# --- Composer (optional; XG uses it) ---
+# --- Composer (optional; XG uses it sometimes) ---
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
@@ -116,7 +117,8 @@ grep -n "DocumentRoot" /etc/apache2/sites-available/000-default.conf || true
 
 exec apache2-foreground
 SH
-    chmod +x /usr/local/bin/railway-apache-start
+
+RUN chmod +x /usr/local/bin/railway-apache-start
 
 # Expose for local + Railway (Railway will still route to $PORT)
 EXPOSE 80 8080
