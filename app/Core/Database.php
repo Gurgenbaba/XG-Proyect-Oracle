@@ -8,28 +8,64 @@ use mysqli;
 
 class Database
 {
-    private string $last_query;
+    private string $last_query = '';
     private mysqli $connection;
     private DebugLib $debug;
+
     private array $db_data = [
         'host' => '',
         'user' => '',
         'pass' => '',
         'name' => '',
         'prefix' => '',
+        'port' => 3306,
     ];
 
     public function __construct()
     {
         require_once XGP_ROOT . CONFIGS_PATH . 'config.php';
 
-        if (defined('DB_HOST') && defined('DB_USER') && defined('DB_PASS') && defined('DB_NAME') && defined('DB_PREFIX')) {
+        // Railway ENV
+        $envHost = getenv('MYSQLHOST') ?: '';
+        $envUser = getenv('MYSQLUSER') ?: '';
+        $envPass = getenv('MYSQLPASSWORD') ?: '';
+        $envName = getenv('MYSQLDATABASE') ?: '';
+        $envPort = getenv('MYSQLPORT') ?: '';
+
+        $prefix = defined('DB_PREFIX') ? DB_PREFIX : 'xgp_';
+
+        if (!empty($envHost) && !empty($envUser) && !empty($envName)) {
             $this->db_data = [
-                'host' => DB_HOST,
-                'user' => DB_USER,
-                'pass' => DB_PASS,
-                'name' => DB_NAME,
+                'host'   => $envHost,
+                'user'   => $envUser,
+                'pass'   => $envPass,
+                'name'   => $envName,
+                'prefix' => $prefix,
+                'port'   => (int)($envPort ?: 3306),
+            ];
+        } elseif (
+            defined('DB_HOST') &&
+            defined('DB_USER') &&
+            defined('DB_PASS') &&
+            defined('DB_NAME') &&
+            defined('DB_PREFIX')
+        ) {
+            $this->db_data = [
+                'host'   => DB_HOST,
+                'user'   => DB_USER,
+                'pass'   => DB_PASS,
+                'name'   => DB_NAME,
                 'prefix' => DB_PREFIX,
+                'port'   => defined('DB_PORT') ? (int)DB_PORT : 3306,
+            ];
+        } else {
+            $this->db_data = [
+                'host'   => 'localhost',
+                'user'   => 'root',
+                'pass'   => '',
+                'name'   => 'xgp',
+                'prefix' => $prefix,
+                'port'   => 3306,
             ];
         }
 
@@ -37,51 +73,55 @@ class Database
         $this->openConnection();
     }
 
-    /**
-     * @return mixed
-     */
-    public function openConnection()
+    public function openConnection(): bool
     {
-        if (isset($this->db_data['host']) && isset($this->db_data['user']) && isset($this->db_data['pass']) && isset($this->db_data['name'])) {
-            if (!$this->tryConnection($this->db_data['host'], $this->db_data['user'], $this->db_data['pass'])) {
-                if (!defined('IN_INSTALL')) {
-                    die($this->debug->error(
-                        -1,
-                        'Database connection failed: ' . $this->connection->connect_error
-                    ));
-                }
-            } else {
-                if (!$this->tryDatabase($this->db_data['name'])) {
-                    if (!defined('IN_INSTALL')) {
-                        die($this->debug->error(
-                            -1,
-                            'Database selection failed: ' . $this->connection->connect_error
-                        ));
-                    }
-                } else {
-                    return true;
-                }
+        if (!$this->tryConnection(
+            $this->db_data['host'],
+            $this->db_data['user'],
+            $this->db_data['pass'],
+            $this->db_data['port']
+        )) {
+            if (!defined('IN_INSTALL')) {
+                die($this->debug->error(
+                    -1,
+                    'Database connection failed: ' . $this->connection->connect_error
+                ));
             }
-
             return false;
         }
+
+        if (!$this->tryDatabase($this->db_data['name'])) {
+            if (!defined('IN_INSTALL')) {
+                die($this->debug->error(
+                    -1,
+                    'Database selection failed: ' . $this->connection->connect_error
+                ));
+            }
+            return false;
+        }
+
+        return true;
     }
 
-    public function tryConnection(string $host = '', string $user = '', string $pass = null): bool
-    {
+    public function tryConnection(
+        string $host = '',
+        string $user = '',
+        string $pass = '',
+        int $port = 3306
+    ): bool {
         try {
-            if (empty($host) or empty($user)) {
+            if (empty($host) || empty($user)) {
                 return false;
             }
 
-            $this->connection = new mysqli($host, $user, $pass);
+            $this->connection = new mysqli($host, $user, $pass, '', $port);
 
             if ($this->connection->connect_error) {
                 return false;
             }
 
-            // force utf8 to avoid weird characters
-            $this->connection->set_charset('utf8');
+            // utf8mb4 for modern MySQL (Railway compatible)
+            $this->connection->set_charset('utf8mb4');
 
             return true;
         } catch (Exception $e) {
@@ -95,35 +135,19 @@ class Database
             return false;
         }
 
-        $db_select = $this->connection->select_db($db_name);
-
-        if ($db_select) {
-            return true;
-        } else {
-            return false;
-        }
+        return $this->connection->select_db($db_name);
     }
 
     public function testConnection(): bool
     {
-        if (is_resource($this->connection) or is_object($this->connection)) {
-            if ($this->connection->ping()) {
-                return true;
-            }
-        }
-
-        return false;
+        return isset($this->connection) && $this->connection->ping();
     }
 
     public function closeConnection(): bool
     {
-        if (isset($this->connection) && (is_resource($this->connection) or is_object($this->connection))) {
-            if ($this->connection->connect_errno == 0) {
-                $this->connection->close();
-            }
-
+        if (isset($this->connection)) {
+            $this->connection->close();
             unset($this->connection);
-
             return true;
         }
 
@@ -132,77 +156,27 @@ class Database
 
     public function query(string $sql = '')
     {
-        if ($sql != '') {
-            $sql = $this->prepareSql($sql);
-            $this->last_query = $sql;
-            $result = $this->connection->query($sql);
+        if ($sql === '') return false;
 
-            $this->confirmQuery($result);
+        $sql = $this->prepareSql($sql);
+        $this->last_query = $sql;
 
-            return $result;
-        }
+        $result = $this->connection->query($sql);
+        $this->confirmQuery($result);
 
-        return false;
+        return $result;
     }
 
     public function queryFetch(string $sql = '')
     {
-        if ($sql != '') {
-            $sql = $this->prepareSql($sql);
-            $this->last_query = $sql;
-            $result = $this->connection->query($sql);
-
-            $this->confirmQuery($result);
-
-            return $this->fetchArray($result);
-        }
-
-        return false;
+        $result = $this->query($sql);
+        return $result ? $this->fetchArray($result) : false;
     }
 
-    public function queryFetchAll($sql = '')
+    public function queryFetchAll(string $sql = '')
     {
-        try {
-            if ($sql != '') {
-                $sql = $this->prepareSql($sql);
-                $this->last_query = $sql;
-                $result = $this->connection->query($sql);
-
-                $this->confirmQuery($result);
-
-                return $this->fetchAll($result);
-            }
-
-            return false;
-        } catch (Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Multi Query
-     *
-     * @param string $sql SQL String
-     *
-     * @return mixed
-     */
-    public function queryMulty($sql = '')
-    {
-        try {
-            if ($sql != '') {
-                $sql = $this->prepareSql($sql);
-                $this->last_query = $sql;
-                $result = $this->connection->multi_query($sql);
-
-                $this->confirmQuery($result);
-
-                return $result;
-            }
-
-            return false;
-        } catch (Exception $e) {
-            return false;
-        }
+        $result = $this->query($sql);
+        return $result ? $this->fetchAll($result) : false;
     }
 
     public function escapeValue($value)
@@ -217,17 +191,7 @@ class Database
 
     public function fetchAll($result_set)
     {
-        if (function_exists('mysqli_fetch_all')) {
-            return $result_set->fetch_all(MYSQLI_ASSOC);
-        }
-
-        $results_array = [];
-
-        while ($row = $this->fetchAssoc($result_set)) {
-            $results_array[] = $row;
-        }
-
-        return $results_array;
+        return $result_set->fetch_all(MYSQLI_ASSOC);
     }
 
     public function fetchAssoc($result_set)
@@ -245,14 +209,8 @@ class Database
         return $result_set->num_rows;
     }
 
-    public function numFields($result_set)
-    {
-        return $result_set->field_count;
-    }
-
     public function insertId()
     {
-        // get the last id inserted over the current db connection
         return $this->connection->insert_id;
     }
 
@@ -261,117 +219,17 @@ class Database
         return $this->connection->affected_rows;
     }
 
-    public function serverInfo()
-    {
-        return $this->connection->server_info;
-    }
-
-    public function freeResult($result_set): void
-    {
-        $result_set->free_result();
-    }
-
-    public function setAutoCommit(bool $status = true): void
-    {
-        $this->connection->autocommit($status);
-    }
-
-    public function beginTransaction()
-    {
-        // disable auto commit
-        $this->setAutoCommit(false);
-
-        $this->connection->begin_transaction();
-    }
-
-    public function commitTransaction()
-    {
-        $this->connection->commit();
-
-        // re enable after transaction end
-        $this->setAutoCommit();
-    }
-
-    public function rollbackTransaction()
-    {
-        $this->connection->rollback();
-
-        // re enable after transaction end
-        $this->setAutoCommit();
-    }
-
-    public function backupDb($tables = '*')
-    {
-        // GET ALL THE TABLES
-        if ($tables == '*') {
-            $tables = [];
-            $result = $this->query('SHOW TABLES');
-
-            while ($row = $this->fetchRow($result)) {
-                $tables[] = $row[0];
-            }
-        } else {
-            $tables = is_array($tables) ? $tables : explode(',', $tables);
-        }
-
-        $return = '';
-
-        //CYCLE TROUGHT
-        foreach ($tables as $table) {
-            $result = $this->query('SELECT * FROM ' . $table);
-            $num_fields = $this->numFields($result);
-
-            $return .= 'DROP TABLE ' . $table . ';';
-            $row2 = $this->fetchRow($this->query('SHOW CREATE TABLE ' . $table));
-            $return .= "\n\n" . $row2[1] . ";\n\n";
-
-            for ($i = 0; $i < $num_fields; $i++) {
-                while ($row = $this->fetchRow($result)) {
-                    $return .= 'INSERT INTO ' . $table . ' VALUES(';
-
-                    for ($j = 0; $j < $num_fields; $j++) {
-                        $row[$j] = addslashes((string) $row[$j]);
-                        $row[$j] = str_replace("\n", '\\n', $row[$j]);
-
-                        if (isset($row[$j])) {
-                            $return .= '"' . $row[$j] . '"';
-                        } else {
-                            $return .= '""';
-                        }
-
-                        if ($j < ($num_fields - 1)) {
-                            $return .= ',';
-                        }
-                    }
-
-                    $return .= ");\n";
-                }
-            }
-            $return .= "\n\n\n";
-        }
-
-        // SAVE FILE
-        $file_name = 'db-backup-' . date('Ymd') . '-' . time() . '-' . (sha1(join(',', $tables))) . '.sql';
-        $handle = fopen(XGP_ROOT . BACKUP_PATH . $file_name, 'w+');
-        $writed = fwrite($handle, $return);
-
-        fclose($handle);
-
-        return $writed;
-    }
-
     private function confirmQuery($result)
     {
         if (!$result) {
-            $output = 'Database query failed: ' . $this->connection->error;
-
-            // uncomment below line when you want to debug your last query
-            $output .= ' Last SQL Query: ' . $this->last_query;
-
-            die($this->debug->error(-1, $output));
+            die($this->debug->error(
+                -1,
+                'Database query failed: ' .
+                $this->connection->error .
+                ' | SQL: ' . $this->last_query
+            ));
         }
 
-        // DEBUG LOG
         $this->debug->add($this->last_query);
     }
 
