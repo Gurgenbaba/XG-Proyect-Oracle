@@ -38,5 +38,5 @@ if (file_exists($file_name)) {
 
     (new $class_name())->index();
 } else {
-    Functions::redirect(XGP_ROOT . 'admin.php');
+    Functions::redirect('admin.php');
 }
