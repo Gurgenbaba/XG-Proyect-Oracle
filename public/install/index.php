@@ -5,6 +5,13 @@ use App\Core\Common;
 define('IN_INSTALL', true);
 define('XGP_ROOT', '../../');
 
+// --- HARD DISABLE INSTALLER (Railway / Production) ---
+$installLock = XGP_ROOT . 'storage' . DIRECTORY_SEPARATOR . 'install.lock';
+if (file_exists($installLock)) {
+    http_response_code(404);
+    exit('Installer disabled.');
+}
+
 require XGP_ROOT . 'app' . DIRECTORY_SEPARATOR . 'Core' . DIRECTORY_SEPARATOR . 'Common.php';
 
 $system = new Common();
