@@ -1,5 +1,5 @@
 <?php
-
+require __DIR__ . '/_preflight.php';
 use App\Core\Common;
 
 define('IN_ADMIN', true);
