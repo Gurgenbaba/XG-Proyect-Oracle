@@ -2,7 +2,7 @@ ARG PHP_VERSION=7.4
 FROM php:${PHP_VERSION}-apache
 
 # ----------------------------------------------------
-# System packages + PHP extensions
+# Packages + PHP extensions
 # ----------------------------------------------------
 RUN set -ex; \
     apt-get update; \
@@ -20,17 +20,29 @@ RUN set -ex; \
     rm -rf /var/lib/apt/lists/*
 
 # ----------------------------------------------------
-# HARD FIX: ensure ONLY ONE Apache MPM (prefork)
+# HARD MPM FIX (Railway-safe):
+# - purge any mpm_event/worker LoadModule lines across /etc/apache2
+# - wipe mods-enabled mpm files
+# - force-create ONLY prefork load file
 # ----------------------------------------------------
 RUN set -ex; \
-    a2dismod mpm_event mpm_worker mpm_prefork || true; \
-    rm -f /etc/apache2/mods-enabled/mpm_event.load /etc/apache2/mods-enabled/mpm_event.conf || true; \
-    rm -f /etc/apache2/mods-enabled/mpm_worker.load /etc/apache2/mods-enabled/mpm_worker.conf || true; \
-    rm -f /etc/apache2/mods-enabled/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.conf || true; \
-    a2enmod mpm_prefork
+    # Remove any LoadModule lines that load event/worker anywhere
+    for f in $(grep -RIlE 'LoadModule\s+mpm_(event|worker)_module' /etc/apache2 || true); do \
+        sed -i -E '/LoadModule\s+mpm_(event|worker)_module/d' "$f"; \
+    done; \
+    \
+    # Remove all enabled MPM module files (even if they were not symlinks)
+    rm -f /etc/apache2/mods-enabled/mpm_*.load /etc/apache2/mods-enabled/mpm_*.conf || true; \
+    \
+    # Force only prefork to be enabled via a single load file
+    printf "LoadModule mpm_prefork_module /usr/lib/apache2/modules/mod_mpm_prefork.so\n" > /etc/apache2/mods-enabled/mpm_prefork.load; \
+    \
+    # Validate config now (fails build if still broken)
+    apache2ctl -t; \
+    apache2ctl -M | grep -E 'mpm_(prefork|event|worker)' || true
 
 # ----------------------------------------------------
-# Opcache recommended settings
+# Opcache recommended
 # ----------------------------------------------------
 RUN { \
     echo 'opcache.memory_consumption=128'; \
@@ -51,25 +63,22 @@ RUN set -ex; \
     sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
 
 # ----------------------------------------------------
-# Install Composer (from official image)
+# Composer
 # ----------------------------------------------------
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
 # ----------------------------------------------------
-# Copy application
+# App copy
 # ----------------------------------------------------
 COPY --chown=www-data:www-data . /var/www/html
 
 # ----------------------------------------------------
-# Install PHP dependencies
+# Dependencies
 # ----------------------------------------------------
 RUN set -ex; \
     composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader; \
     chown -R www-data:www-data /var/www/html
 
-# ----------------------------------------------------
-# Start Apache
-# ----------------------------------------------------
 CMD ["apache2-foreground"]
