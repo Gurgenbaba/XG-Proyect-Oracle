@@ -1,0 +1,26 @@
+# Git / tooling
+.git
+.github
+.vscode
+.idea
+
+# Local docker volumes / init stuff
+data/
+mysql-volume/
+*.sql
+*.sql.gz
+
+# Runtime / cache
+storage/logs/
+storage/backups/
+storage/cache/
+storage/sessions/
+
+# Tests / docs (optional)
+tests/
+README*.md
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
