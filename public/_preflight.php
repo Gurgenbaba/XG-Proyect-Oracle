@@ -8,23 +8,61 @@ if (!file_exists($lock)) {
     exit('Missing storage/install.lock (installer is disabled).');
 }
 
-// If config missing -> generate from ENV (Railway vars)
 $configFile = XGP_ROOT . 'config' . DIRECTORY_SEPARATOR . 'config.php';
-if (!file_exists($configFile)) {
-    $dbHost = getenv('DB_HOST');
-    $dbName = getenv('DB_NAME');
-    $dbUser = getenv('DB_USER');
-    $dbPass = getenv('DB_PASS');
-    $dbPort = getenv('DB_PORT') ?: '3306';
+if (file_exists($configFile)) {
+    return; // ok
+}
 
-    if (!$dbHost || !$dbName || !$dbUser) {
-        http_response_code(500);
-        exit('Missing config/config.php and DB_* env vars. Installer is disabled, so config must be provided.');
+function envv(string $k): ?string {
+    $v = getenv($k);
+    if ($v === false) return null;
+    $v = trim($v);
+    return $v === '' ? null : $v;
+}
+
+// 1) Prefer explicit DB_* vars
+$dbHost = envv('DB_HOST');
+$dbName = envv('DB_NAME');
+$dbUser = envv('DB_USER');
+$dbPass = envv('DB_PASS');
+$dbPort = envv('DB_PORT') ?: '3306';
+
+// 2) Fallback: parse DATABASE_URL if DB_* missing
+if (!$dbHost || !$dbName || !$dbUser) {
+    $dsn = envv('DATABASE_URL') ?: envv('MYSQL_URL') ?: envv('MARIADB_URL');
+
+    if ($dsn) {
+        $p = parse_url($dsn);
+        $scheme = strtolower($p['scheme'] ?? '');
+
+        if ($scheme === 'postgres' || $scheme === 'postgresql') {
+            http_response_code(500);
+            exit('DATABASE_URL is PostgreSQL. This game expects MySQL/MariaDB. Provide DB_* vars or a mysql:// URL.');
+        }
+
+        // Accept mysql/mariadb
+        if ($scheme === 'mysql' || $scheme === 'mariadb') {
+            $dbHost = $dbHost ?: ($p['host'] ?? null);
+            $dbPort = $dbPort ?: (string)($p['port'] ?? '3306');
+            $dbUser = $dbUser ?: (urldecode($p['user'] ?? '') ?: null);
+            $dbPass = $dbPass ?: urldecode($p['pass'] ?? '');
+            $dbName = $dbName ?: (isset($p['path']) ? ltrim($p['path'], '/') : null);
+        }
     }
+}
 
-    $content = <<<PHP
+if (!$dbHost || !$dbName || !$dbUser) {
+    http_response_code(500);
+    exit('Missing config/config.php and no DB_* / DATABASE_URL (mysql) provided. Installer is disabled, so config must be provided.');
+}
+
+// Generate config/config.php in the format your app expects (DB settings only).
+// If your real config.php contains more keys, paste it (mask secrets) and I’ll match it 1:1.
+$content = <<<PHP
 <?php
-// Auto-generated on boot (Railway). Do not edit in prod.
+// Auto-generated on boot (Railway). Installer is disabled.
+// If you need additional config keys, expand this file.
+
 \$dbsettings = [
   'host' => '{$dbHost}',
   'user' => '{$dbUser}',
@@ -34,6 +72,8 @@ if (!file_exists($configFile)) {
 ];
 PHP;
 
-    @mkdir(dirname($configFile), 0775, true);
-    file_put_contents($configFile, $content);
+@mkdir(dirname($configFile), 0775, true);
+if (file_put_contents($configFile, $content) === false) {
+    http_response_code(500);
+    exit('Failed to write config/config.php. Check filesystem permissions (Railway container) and that /config is writable.');
 }
